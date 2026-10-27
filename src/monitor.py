@@ -65,38 +65,27 @@ drift_results.append({
 drift_df = pd.DataFrame(drift_results)
 overall_data_drift = bool(drift_df["Drift detected"].any())
 
-# 2. Train the baseline model on reference data
-X = reference[FEATURES]
-y = reference[TARGET]
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
 
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("location", OneHotEncoder(handle_unknown="ignore"), ["location"])
-    ],
-    remainder="passthrough"
-)
-
-model = Pipeline([
-    ("preprocessor", preprocessor),
-    ("regressor", RandomForestRegressor(
-        n_estimators=100,
-        random_state=42,
-        n_jobs=-1
-    ))
-])
-
-model.fit(X_train, y_train)
-
-# 3. Persist the trained model
+# 2. Load the previously trained model
 model_path = MODEL_DIR / "house_price_model.joblib"
-joblib.dump(model, model_path)
 
-# 4. Evaluate reference and current performance
-reference_predictions = model.predict(X_test)
+if not model_path.exists():
+    raise FileNotFoundError(
+        "Trained model not found. Run: python src/train_model.py"
+    )
+
+model = joblib.load(model_path)
+print(f"Loaded saved model: {model_path}")
+
+# 3. Load the held-out reference test set
+reference_test = pd.read_csv(DATA_DIR / "reference_test.csv")
+
+X_reference_test = reference_test[FEATURES]
+y_reference_test = reference_test[TARGET]
+
+# 4. Evaluate the saved model on reference and current data
+reference_predictions = model.predict(X_reference_test)
 current_predictions = model.predict(current[FEATURES])
 
 def calculate_metrics(actual, predicted):
@@ -106,7 +95,48 @@ def calculate_metrics(actual, predicted):
         "R2": float(r2_score(actual, predicted))
     }
 
-reference_metrics = calculate_metrics(y_test, reference_predictions)
+reference_metrics = calculate_metrics(
+    y_reference_test, reference_predictions
+)
+current_metrics = calculate_metrics(
+    current[TARGET], current_predictions
+)
+
+performance_df = pd.DataFrame([
+    {"Dataset": "Reference test", **reference_metrics},
+    {"Dataset": "Current production", **current_metrics}
+])
+
+mae_increase = (
+    (current_metrics["MAE"] - reference_metrics["MAE"])
+    / max(reference_metrics["MAE"], 1e-9)
+) * 100
+
+performance_drift = bool(mae_increase > 20)
+
+# 3. Persist the trained model
+model_path = MODEL_DIR / "house_price_model.joblib"
+joblib.dump(model, model_path)
+
+# 4. Evaluate reference and current performance
+reference_test = pd.read_csv(DATA_DIR / "reference_test.csv")
+
+X_reference_test = reference_test[FEATURES]
+y_reference_test = reference_test[TARGET]
+
+reference_predictions = model.predict(X_reference_test)
+current_predictions = model.predict(current[FEATURES])
+
+def calculate_metrics(actual, predicted):
+    return {
+        "MAE": float(mean_absolute_error(actual, predicted)),
+        "RMSE": float(np.sqrt(mean_squared_error(actual, predicted))),
+        "R2": float(r2_score(actual, predicted))
+    }
+
+reference_metrics = calculate_metrics(
+    y_reference_test, reference_predictions
+)
 current_metrics = calculate_metrics(current[TARGET], current_predictions)
 
 performance_df = pd.DataFrame([
